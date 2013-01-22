@@ -125,40 +125,7 @@ static event_t global_events[] = {
 #endif
 };
 
-static event_t per_pid_events[] = {
-#if USE_MRR
-   /** MRR **/
-   {
-      .name    = "MRR_READ",
-      .type    = PERF_TYPE_RAW,
-      .config  = 0x1004062F0,
-      .leader  = -1,
-   },
-   {
-      .name    = "MRR_READ_WRITE",
-      .type    = PERF_TYPE_RAW,
-      .config  = 0x100407BF0,
-      .leader  = 0
-   },
-#else
-   /** DCMR */
-   {
-      .name    = "DCR_ALL",
-      .type    = PERF_TYPE_RAW,
-      .config  = 0x000401F43,
-      .leader  = -1,
-   },
-   {
-      .name    = "DCR_MODIFIED",
-      .type    = PERF_TYPE_RAW,
-      .config  = 0x000401043,
-      .leader  = 0,
-   },
-#endif
-};
-
 static int nb_events = sizeof(global_events)/sizeof(*global_events);
-static int nb_events_per_pid = sizeof(per_pid_events)/sizeof(*per_pid_events);
 
 static int nb_nodes;
 static uint64_t get_cpu_freq(void) {
@@ -244,8 +211,6 @@ struct tid_struct {
    int tid;
    int pid;
    int last_iteration_seen;
-   int *fd;
-   struct perf_read_ev *last_count;
    char *name;
    int monitored;
 };
@@ -296,77 +261,54 @@ static long percent_running(struct perf_read_ev *last, struct perf_read_ev *prev
    return percent_running;
 }
 
-#define MIN_RELEVANT_VALUE 200000
 static int rbtree_parse(void *a, void *b) {
-   int j, enable_replication;
-   uint64_t nw, nwr, write_ratio = 101;
-   long percent_running_nw, percent_running_nwr;
+   int enable_replication;
    struct tid_struct *v = b;
-   struct perf_read_ev single_count[nb_events_per_pid];
 
-   if(!v->monitored)
+   if(iteration == 1) {
+      // Skip the first second
+      printf("PID = %d, TID = %d, name = %s, ignoring first iteration\n", v->pid, v->tid, v->name);
       goto end;
+   }
+
+   if(!v->monitored) {
+      goto end;
+   }
 
    if(iteration != v->last_iteration_seen)
       goto end_stop_monitoring;
 
-   for(j = 0; j < nb_events_per_pid; j++) {
-      if(read(v->fd[j], &single_count[j], sizeof(single_count[j])) != sizeof(single_count[j]))
-         goto end_stop_monitoring;
+   /* Choose based on the app name */
+   if(v->name && ((!strcmp(v->name, "streamcluster")) || (!strcmp(v->name, "face_project")) || (!strcmp(v->name, "pca.sf")))) {
+      enable_replication = 1;
    }
 
+   printf("PID = %d, TID = %d, name = %s, enable_replication = %d\n", v->pid, v->tid, v->name, enable_replication);
 
-   nwr = single_count[0].value - v->last_count[0].value;
-   nw = single_count[1].value - v->last_count[1].value;
-
-   percent_running_nwr = percent_running(&single_count[0], &(v->last_count[0]));
-   percent_running_nw = percent_running(&single_count[1], &(v->last_count[1]));
-
-   //if(nw > MIN_RELEVANT_VALUE) {
-   if(nwr && (percent_running_nwr > MIN_ACTIVE_PERCENTAGE) && (percent_running_nw > MIN_ACTIVE_PERCENTAGE)) {
-      nw = (nw * 100) / percent_running_nw;
-      nwr = (nwr * 100) / percent_running_nwr;
-
-      write_ratio = nw *100 / nwr;
+   struct process_struct *value = rbtree_lookup(pids_rbtree, (void*)(long)v->pid, pointer_cmp);
+   if(value == NULL) {
+      value = calloc(1, sizeof(*value));
+      value->name = strdup(v->name);
+      value->pid = v->pid;
+      value->replication_enabled = -1;
+      value->replication_enabled_previous = -1;
+      rbtree_insert(pids_rbtree, (void*)(long)v->pid, value, pointer_cmp);
    }
 
-   //write_ratio = (single_count[0].value - v->last_count[0].value > MIN_RELEVANT_VALUE)?(single_count[1].value - v->last_count[1].value)*100/(single_count[0].value - v->last_count[0].value):101;
-   enable_replication = write_ratio <= DCRM_MAX;
-
-   printf("PID = %d, TID = %d, name = %s, WR = %3lu %%, value[0] = %lu\n", v->pid, v->tid, v->name, (long unsigned) write_ratio, single_count[0].value - v->last_count[0].value);
-   if(write_ratio != 101) { // We don't want to mess up replication because we didn't gather enough samples...
-      struct process_struct *value = rbtree_lookup(pids_rbtree, (void*)(long)v->pid, pointer_cmp);
-      if(value == NULL) {
-         value = calloc(1, sizeof(*value));
-         value->name = strdup(v->name);
-         value->pid = v->pid;
-         value->replication_enabled = -1;
-         value->replication_enabled_previous = -1;
-         rbtree_insert(pids_rbtree, (void*)(long)v->pid, value, pointer_cmp);
-      }
-      if(value->last_iteration_seen < v->last_iteration_seen)
-         value->last_iteration_seen = v->last_iteration_seen;
-      if(enable_replication && value->replication_enabled != 0) //enable replication only if not disabled...
-         value->replication_enabled = 1;
-      else
-         value->replication_enabled = 0;
-   }
+   if(value->last_iteration_seen < v->last_iteration_seen)
+      value->last_iteration_seen = v->last_iteration_seen;
+   if(enable_replication && value->replication_enabled != 0) //enable replication only if not disabled...
+      value->replication_enabled = 1;
+   else
+      value->replication_enabled = 0;
 
    v->monitored = 1;
-   for(j = 0; j < nb_events_per_pid; j++) {
-      v->last_count[j] = single_count[j];
-   }
 end:
    return 0;
 
 end_stop_monitoring:
-   /* Close profiling file descriptors for this tid */
    /* If no tid of the process are monitored, replication will be disabled for the process */
    v->monitored = 0;
-   for(j = 0; j < nb_events; j++) {
-      close(v->fd[j]);
-      v->fd[j] = 0;
-   }
    return 1;
 }
 
@@ -675,6 +617,7 @@ static void thread_loop() {
 
       iteration++;
       /* Get all tids that matter */
+      system("ps -A -L -o lwp= -o pid= -o %cpu= -o comm= | grep -v ':'");
       FILE *procs = popen("ps -A -L -o lwp= -o pid= -o %cpu= -o comm= | grep -v ':'", "r");
       int tid, pid;
       float percent_cpu;
@@ -694,14 +637,9 @@ static void thread_loop() {
             value->pid = pid;
             value->name = strdup(app_name);
             value->monitored = 0;
-            value->fd = calloc(nb_events_per_pid, sizeof(*value->fd));
-            value->last_count = calloc(nb_events_per_pid, sizeof(*value->last_count));
             rbtree_insert(tids_rbtree, (void*)(long)tid, value, pointer_cmp);
          }
          if(!value->monitored) {
-            for(j = 0; j < nb_events_per_pid; j++) {
-               value->fd[j] = open_fd(per_pid_events, j, tid, -1, (per_pid_events[j].leader==-1)?-1:(value->fd[per_pid_events[j].leader]));
-            }
             value->monitored = 1;
          }
          value->last_iteration_seen = iteration;
