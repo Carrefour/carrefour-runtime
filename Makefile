@@ -7,7 +7,7 @@ LDLIBS = -lpthread -lnuma ${LIBGSL}
 
 all: carrefour tags
 
-carrefour: carrefour.c carrefour.h
+carrefour: carrefour.c rbtree.c carrefour.h
 
 tags: carrefour.c carrefour.h
 	ctags --totals `find . -name '*.[ch]'`
