@@ -3,13 +3,21 @@ LIBGSL = $(shell gsl-config --libs)
 CFLAGS = -Wall
 LDLIBS = -lpthread -lnuma ${LIBGSL}
 
+NB_NODES = $(shell lscpu | awk '/NUMA node\(s\)/ {print $$3}')
+CFLAGS += -DNB_NODES=${NB_NODES}
+
 .PHONY: all clean
 
-all: carrefour tags
+all: makefile.dep carrefour-kthp tags
 
-carrefour: carrefour.c carrefour.h
+makefile.dep: *.[Cch]
+	(for i in *.[Cc]; do ${CC} -MM "$${i}" ${CFLAGS}; done) > $@
+   
+-include makefile.dep
 
-tags: carrefour.c carrefour.h
+carrefour: carrefour.o
+
+tags: *.[Cch]
 	ctags --totals `find . -name '*.[ch]'`
 	cscope -b -q -k -R -s.
 
@@ -18,4 +26,4 @@ clean_tags:
 	rm tags
 
 clean: clean_tags
-	rm -f carrefour *o
+	rm -f carrefour-kthp *.o

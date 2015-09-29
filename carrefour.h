@@ -45,9 +45,13 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include <dirent.h>
 #include <numa.h>
 
-#define MAX_CORE                64
 #define TIME_SECOND             1000000
-#define PAGE_SIZE               (4*1024)
+#define TIME_MS                 1000
+
+#define TIME_IN_US(t)           (t.tv_sec*1000000 + t.tv_usec)
+#define TIME_IN_S(t)            (t.tv_sec + t.tv_usec / 1000000.)
+#define TIME_DIFF_S(t2,t1)      (TIME_IN_S(t2) - TIME_IN_S(t1))
+#define TIME_DIFF_US(t2,t1)     (TIME_IN_US(t2) - TIME_IN_US(t1))
 
 #undef __NR_perf_counter_open
 #ifdef __powerpc__
@@ -70,6 +74,9 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 #define __unused__ __attribute__((unused))
 
+#define USED_BY_CARREFOUR  1
+#define USED_BY_KTHP       2
+
 typedef struct _event {
    uint64_t type;
    uint64_t config;
@@ -77,6 +84,9 @@ typedef struct _event {
    uint64_t exclude_user;
    const char* name;
    long leader;
+   int used_by;
+
+   unsigned global_event_no;
 } event_t;
 
 
